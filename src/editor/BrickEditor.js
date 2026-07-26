@@ -4,12 +4,21 @@
 //  - 多选/分组、整组移动旋转
 // 坐标约定:内部数据全部 LDraw 坐标(LDU,+Y 向下);场景根节点 rotation.x=PI。
 import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
   IDENTITY, mul3, apply3, ROT_Y90, ROT_X90, newBrickId,
 } from '../ldraw-io.js';
+import { InstancePool } from './InstancePool.js';
 
 const GRID = 10;
+// 边线数量阈值:零件数超过该值时整体隐藏边线(每砖一个 LineSegments,数量大时是主要开销)
+const EDGE_LIMIT = 300;
+// 选中/拖动无效的实例乘法着色(instanceColor;分量>1 在标准材质浮点属性下不被 clamp)
+const TINT_NONE = [1, 1, 1];
+// 乘法着色只能"压暗"某些通道(纯红件的蓝通道≈0,再乘也提不亮),
+// 因此选中的主要视觉反馈是描边(见 _refreshSelOutline),这里只做轻微色调偏移辅助。
+const TINT_SELECT = [0.72, 0.82, 1.25];
+const TINT_INVALID = [1.25, 0.5, 0.5];
 const TAP_MS = 600;
 const TAP_PX = 10;
 const UNDO_MAX = 100;
@@ -127,8 +136,10 @@ export class BrickEditor {
     this.root = new THREE.Group();
     this.root.rotation.x = Math.PI;
     this.scene.add(this.root);
-    this.brickGroup = new THREE.Group();
-    this.root.add(this.brickGroup);
+    // 实例池(实体渲染)+ 独立边线组(每砖一个 LineSegments,矩阵与实例同步)
+    this.pool = new InstancePool(this.root, this.partLib);
+    this.edgeGroup = new THREE.Group();
+    this.root.add(this.edgeGroup);
 
     this.ghost = null;
     this.raycaster = new THREE.Raycaster();
@@ -164,20 +175,17 @@ export class BrickEditor {
 
   _pick(ev, { includeGround = true } = {}) {
     this.raycaster.setFromCamera(this._ndc(ev), this.camera);
-    const hits = this.raycaster.intersectObjects(this.brickGroup.children, true);
-    for (const hit of hits) {
-      let o = hit.object;
-      while (o && o.userData.brickId === undefined) o = o.parent;
-      if (o && o.userData.brickId !== undefined) {
-        const b = this.bricks.find(x => x.id === o.userData.brickId);
-        if (b) {
-          const n = hit.face ? hit.face.normal.clone().transformDirection(hit.object.matrixWorld) : null;
-          return {
-            brick: b,
-            pointLDraw: this._toLDraw(hit.point),
-            normalLDraw: n ? [n.x, -n.y, -n.z] : null,
-          };
-        }
+    const hit = this.pool.raycast(this.raycaster);
+    if (hit) {
+      const b = this.bricks.find(x => x.id === hit.brickId);
+      if (b) {
+        // normalWorld 已含 instanceMatrix 旋转(见 InstancePool.raycast)
+        const n = hit.normalWorld;
+        return {
+          brick: b,
+          pointLDraw: this._toLDraw(hit.point),
+          normalLDraw: n ? [n.x, -n.y, -n.z] : null,
+        };
       }
     }
     if (includeGround) {
@@ -350,9 +358,8 @@ export class BrickEditor {
   // 指针拾取表面点(排除指定零件),用于拖动跟随表面
   _pickSurface(ev, excludeIds = new Set()) {
     this.raycaster.setFromCamera(this._ndc(ev), this.camera);
-    const objs = this.brickGroup.children.filter(o => !excludeIds.has(o.userData.brickId));
-    const hits = this.raycaster.intersectObjects(objs, true);
-    if (hits.length) return this._toLDraw(hits[0].point);
+    const hit = this.pool.raycast(this.raycaster, excludeIds);
+    if (hit) return this._toLDraw(hit.point);
     const gh = this.raycaster.intersectObject(this.ground, false);
     if (gh.length) return this._toLDraw(gh[0].point);
     return null;
@@ -365,12 +372,44 @@ export class BrickEditor {
     el.addEventListener('pointerdown', e => this._onDown(e));
     el.addEventListener('pointermove', e => this._onMove(e));
     el.addEventListener('pointerup', e => this._onUp(e));
-    el.addEventListener('pointercancel', () => { this._ptr = null; this._endDrag(false); });
+    el.addEventListener('pointercancel', () => { this._ptr = null; this._clearLongPress(); this._endDrag(false); });
+    // 桌面右键:直接选中零件(免切模式)
+    el.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      this._quickSelect(e);
+    });
+  }
+
+  // 快速选中:切到选择模式并选中指定零件
+  _quickSelect(ev) {
+    const hit = this._pick(ev, { includeGround: false });
+    if (!hit || !hit.brick) return false;
+    if (this.mode !== 'select') {
+      this.mode = 'select';
+      this.cb.onModeSwitch && this.cb.onModeSwitch('select');
+    }
+    this._selectBrick(hit.brick);
+    if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(25);
+    return true;
+  }
+
+  _clearLongPress() {
+    if (this._lpTimer) { clearTimeout(this._lpTimer); this._lpTimer = null; }
   }
 
   _onDown(ev) {
-    if (!ev.isPrimary) { this._ptr = null; this._endDrag(false); return; }
+    if (!ev.isPrimary) { this._ptr = null; this._clearLongPress(); this._endDrag(false); return; }
     this._ptr = { x: ev.clientX, y: ev.clientY, t: performance.now(), moved: false, dragging: false };
+    // 放置/上色/删除模式下,长按零件 = 快速选中(触屏友好)
+    this._clearLongPress();
+    if (this.mode !== 'select' && ev.pointerType !== 'mouse') {
+      const evCopy = { clientX: ev.clientX, clientY: ev.clientY };
+      this._lpTimer = setTimeout(() => {
+        if (this._ptr && !this._ptr.moved) {
+          if (this._quickSelect(evCopy)) this._ptr = null; // 取消本次点按的后续放置
+        }
+      }, 550);
+    }
     if (this.mode === 'select') {
       const hit = this._pick(ev, { includeGround: false });
       if (hit && hit.brick) {
@@ -394,7 +433,7 @@ export class BrickEditor {
   _onMove(ev) {
     if (this._ptr && ev.isPrimary) {
       const dx = ev.clientX - this._ptr.x, dy = ev.clientY - this._ptr.y;
-      if (Math.hypot(dx, dy) > TAP_PX) this._ptr.moved = true;
+      if (Math.hypot(dx, dy) > TAP_PX) { this._ptr.moved = true; this._clearLongPress(); }
       if (this._ptr.dragging && this.selection.size && this._ptr.moved) {
         this._dragTo(ev);
         return;
@@ -452,6 +491,7 @@ export class BrickEditor {
   }
 
   _onUp(ev) {
+    this._clearLongPress();
     const p = this._ptr;
     this._ptr = null;
     if (!p) return;
@@ -644,34 +684,57 @@ export class BrickEditor {
   }
 
   async _addBrick(rec) {
-    const { object } = await this.partLib.instantiate(rec.partId, rec.colorCode);
     if (!rec.info) rec.info = await this.partLib.loadPart(rec.partId);
     if (!rec.m) rec.m = IDENTITY;
-    rec.object = object;
-    object.userData.brickId = rec.id;
+    rec.object = undefined; // 不再持有克隆 Group
+    rec.handle = this.pool.add(rec.id, rec.partId, rec.colorCode, rec.info.solidGeo);
+    if (rec.info.edgeGeo) {
+      const e = new THREE.LineSegments(rec.info.edgeGeo, this.partLib.getMaterials(rec.colorCode).edge);
+      e.matrixAutoUpdate = false;
+      rec.edgeObj = e;
+      this.edgeGroup.add(e);
+    } else {
+      rec.edgeObj = null;
+    }
     this._applyTransform(rec);
-    this.brickGroup.add(object);
+    if (this._visFilter && !this._visFilter(rec)) {
+      this.pool.setVisible(rec.handle, false);
+      if (rec.edgeObj) rec.edgeObj.visible = false;
+    }
     this.bricks.push(rec);
+    this._updateEdgeGroupVisible();
     return rec;
   }
 
+  // 边线总开关:数量超过 EDGE_LIMIT 或高性能模式时整组隐藏
+  _updateEdgeGroupVisible() {
+    this.edgeGroup.visible = !this.perfMode && this.bricks.length <= EDGE_LIMIT;
+  }
+
   _applyTransform(b) {
-    this._setMatrix(b.object, b.m, b.x, b.y, b.z);
-    this._refreshHighlight();
+    this.pool.setMatrix(b.handle, b.m, b.x, b.y, b.z);
+    if (b.edgeObj) this._setMatrix(b.edgeObj, b.m, b.x, b.y, b.z);
+    if (b._selSeg) {                       // 选中描边跟随移动
+      b._selSeg.matrix.copy(b.handle.mat);
+      b._selSeg.matrixWorldNeedsUpdate = true;
+    }
   }
 
   _applyColor(b) {
-    const { mesh, edge } = this.partLib.getMaterials(b.colorCode);
-    b.object.traverse(c => {
-      if (c.isMesh) c.material = mesh;
-      else if (c.isLineSegments) c.material = edge;
-    });
+    // 换色 = 从旧颜色池移除,加入新颜色池(保持矩阵/可见性/高亮)
+    const wasVisible = b.handle.visible;
+    this.pool.remove(b.handle);
+    b.handle = this.pool.add(b.id, b.partId, b.colorCode, b.info.solidGeo);
+    this.pool.setMatrix(b.handle, b.m, b.x, b.y, b.z);
+    if (!wasVisible) this.pool.setVisible(b.handle, false);
+    if (b.edgeObj) b.edgeObj.material = this.partLib.getMaterials(b.colorCode).edge;
     this._refreshHighlight();
   }
 
   // ---------- 选择 ----------
   _selectBrick(b) {
     this.selection.clear();
+    this._primaryId = b ? b.id : null;
     if (b) {
       if (b.group != null) {
         for (const x of this.bricks) if (x.group === b.group) this.selection.add(x.id);
@@ -690,6 +753,7 @@ export class BrickEditor {
     for (const id of ids) {
       if (allIn) this.selection.delete(id); else this.selection.add(id);
     }
+    if (!allIn) this._primaryId = b.id;
     this._afterSelectionChange();
   }
 
@@ -697,6 +761,56 @@ export class BrickEditor {
     if (!this.selection.size) return;
     this.selection.clear();
     this._afterSelectionChange();
+  }
+
+  clearSelection() { this._clearSelection(); }
+
+  // a 的柱钉是否扣住 b 的底面格(方向性:a 支撑 b)
+  _pairConnected(a, b) {
+    const { cells, normal } = this._worldCells(b);
+    for (const s of this._worldStuds(a)) {
+      if (s.dx * normal[0] + s.dy * normal[1] + s.dz * normal[2] > -0.9) continue;
+      for (const c of cells) {
+        const vx = c.x - s.x, vy = c.y - s.y, vz = c.z - s.z;
+        const along = vx * s.dx + vy * s.dy + vz * s.dz;
+        if (Math.abs(along) > CONNECT_PLANE_TOL) continue;
+        const px = vx - along * s.dx, py = vy - along * s.dy, pz = vz - along * s.dz;
+        if (px * px + py * py + pz * pz <= CONNECT_XY_TOL * CONNECT_XY_TOL) return true;
+      }
+    }
+    return false;
+  }
+
+  // 连带选择:把"扣在当前选中零件上方"的零件(递归)全部并入选择
+  selectConnectedAbove() {
+    if (!this.selection.size) return 0;
+    const inSet = new Set(this.selection);
+    let frontier = this.bricks.filter(b => inSet.has(b.id));
+    let added = 0;
+    while (frontier.length) {
+      const next = [];
+      for (const cand of this.bricks) {
+        if (inSet.has(cand.id)) continue;
+        // 快速包围盒预筛
+        const cb = this._worldBody(cand);
+        for (const base of frontier) {
+          const bb = this._worldBody(base);
+          if (cb.x0 > bb.x1 + 8 || cb.x1 < bb.x0 - 8 ||
+              cb.z0 > bb.z1 + 8 || cb.z1 < bb.z0 - 8 ||
+              cb.y0 > bb.y1 + 8 || cb.y1 < bb.y0 - 8) continue;
+          if (this._pairConnected(base, cand)) {
+            inSet.add(cand.id);
+            next.push(cand);
+            added++;
+            break;
+          }
+        }
+      }
+      frontier = next;
+    }
+    this.selection = inSet;
+    this._afterSelectionChange();
+    return added;
   }
 
   setMultiMode(v) {
@@ -718,23 +832,52 @@ export class BrickEditor {
   }
 
   _refreshHighlight() {
-    const emColor = this.dragInvalid ? 0xff2222 : 0x2266ff;
+    const selTint = this.dragInvalid ? TINT_INVALID : TINT_SELECT;
     for (const b of this.bricks) {
-      const isSel = this.selection.has(b.id);
-      b.object.traverse(c => {
-        if (c.isMesh) {
-          if (isSel) {
-            const base = this.partLib.getMaterials(b.colorCode).mesh;
-            if (c.material === base || c.material.emissive) {
-              if (c.material === base) c.material = base.clone();
-              c.material.emissive = new THREE.Color(emColor);
-              c.material.emissiveIntensity = this.dragInvalid ? 0.55 : 0.35;
-            }
-          } else {
-            c.material = this.partLib.getMaterials(b.colorCode).mesh;
-          }
-        }
+      const t = this.selection.has(b.id) ? selTint : TINT_NONE;
+      this.pool.setTint(b.handle, t[0], t[1], t[2]);
+    }
+    this._refreshSelOutline();
+  }
+
+  // 选中轮廓叠加:instanceColor 是乘法着色,在饱和色(如纯红)上蓝色调根本提不亮,
+  // 所以选中反馈以"永远可见的高亮描边"为主(depthTest=false,任何底色都清晰)。
+  _refreshSelOutline() {
+    if (!this.selGroup) {
+      this.selGroup = new THREE.Group();
+      this.selGroup.renderOrder = 999;
+      this.root.add(this.selGroup);
+      this._selMatSel = new THREE.LineBasicMaterial({
+        color: 0x4da3ff, depthTest: false, transparent: true, opacity: 0.95,
       });
+      this._selMatBad = new THREE.LineBasicMaterial({
+        color: 0xff4d4d, depthTest: false, transparent: true, opacity: 0.95,
+      });
+    }
+    // 清空旧描边(选中数通常很少,直接重建最简单可靠;共享的 edgeGeo 不能 dispose)
+    for (const c of this.selGroup.children) {
+      if (c.userData.ownGeo) c.geometry.dispose();
+    }
+    this.selGroup.clear();
+    for (const b of this.bricks) b._selSeg = null;
+    if (!this.selection.size) return;
+    const mat = this.dragInvalid ? this._selMatBad : this._selMatSel;
+    for (const b of this.bricks) {
+      if (!this.selection.has(b.id)) continue;
+      if (!b.handle || !b.handle.visible) continue;
+      const geo = b.info?.edgeGeo || b.info?.solidGeo;
+      if (!geo) continue;
+      const seg = b.info.edgeGeo
+        ? new THREE.LineSegments(geo, mat)
+        : new THREE.LineSegments(new THREE.EdgesGeometry(geo), mat);
+      if (!b.info.edgeGeo) seg.userData.ownGeo = true;
+      seg.matrixAutoUpdate = false;
+      seg.matrix.copy(b.handle.mat);
+      seg.matrixWorldNeedsUpdate = true;
+      seg.renderOrder = 999;
+      seg.frustumCulled = false;
+      b._selSeg = seg;              // 供拖动时同步矩阵
+      this.selGroup.add(seg);
     }
   }
 
@@ -745,9 +888,13 @@ export class BrickEditor {
     this._snapshot();
     const set = new Set(ids);
     for (const b of this.bricks) {
-      if (set.has(b.id)) this.brickGroup.remove(b.object);
+      if (set.has(b.id)) {
+        this.pool.remove(b.handle);
+        if (b.edgeObj) this.edgeGroup.remove(b.edgeObj);
+      }
     }
     this.bricks = this.bricks.filter(b => !set.has(b.id));
+    this._updateEdgeGroupVisible();
     for (const id of set) this.selection.delete(id);
     this._afterSelectionChange();
     this._notify();
@@ -755,21 +902,33 @@ export class BrickEditor {
 
   deleteSelected() { if (this.selection.size) this.deleteBricks([...this.selection]); }
 
-  _transformSelected(R) {
+  _transformSelected(R, pivotMode = 'centroid') {
     const sel = this._selectedBricks();
     if (!sel.length) return;
     this._snapshot();
-    // 组中心(吸附到 10 网格)
-    let cx = 0, cz = 0;
-    for (const b of sel) { cx += b.x; cz += b.z; }
-    cx = Math.round(cx / sel.length / GRID) * GRID;
-    cz = Math.round(cz / sel.length / GRID) * GRID;
-    const cy = Math.max(...sel.map(b => b.y + this._relBody(b.info, b.m).maxY)); // 组底面
+    let cx, cy, cz;
+    if (pivotMode === 'primary') {
+      // 铰链式:绕基准件(最后点选的零件)原点旋转,不重力落位
+      const prim = sel.find(b => b.id === this._primaryId) || sel[0];
+      cx = prim.x; cy = prim.y; cz = prim.z;
+    } else {
+      // 组中心(吸附到 10 网格)
+      cx = 0; cz = 0;
+      for (const b of sel) { cx += b.x; cz += b.z; }
+      cx = Math.round(cx / sel.length / GRID) * GRID;
+      cz = Math.round(cz / sel.length / GRID) * GRID;
+      cy = Math.max(...sel.map(b => b.y + this._relBody(b.info, b.m).maxY)); // 组底面
+    }
     for (const b of sel) {
       const [ox, oy, oz] = [b.x - cx, b.y - cy, b.z - cz];
       const [nx, ny, nz] = apply3(R, ox, oy, oz);
       b.x = round3(cx + nx); b.y = round3(cy + ny); b.z = round3(cz + nz);
       b.m = mul3(R, b.m).map(round3);
+    }
+    if (pivotMode === 'primary') {
+      for (const b of sel) this._applyTransform(b);
+      this._notify();
+      return;
     }
     // 整组重新落位:让组内最低点落到支撑面
     const selSet = new Set(this.selection);
@@ -795,19 +954,20 @@ export class BrickEditor {
   rotateSelected() { this._transformSelected(ROT_Y90); }
   flipSelected() { this._transformSelected(ROT_X90); }
 
-  // 任意角度旋转(轴 'x'|'y'|'z',角度制;local=true 绕零件自身轴)
-  rotateSelectedBy(axis, deg, local = false) {
+  // 任意角度旋转(轴 'x'|'y'|'z',角度制;local=true 绕基准件自身轴;pivotMode 'centroid'|'primary')
+  rotateSelectedBy(axis, deg, local = false, pivotMode = 'centroid') {
     if (!deg) return;
     let R = rotAxis(axis, deg);
     if (local) {
-      const first = this._selectedBricks()[0];
+      const sel = this._selectedBricks();
+      const first = sel.find(b => b.id === this._primaryId) || sel[0];
       if (first) {
         const m0 = first.m;
         const mT = [m0[0], m0[3], m0[6], m0[1], m0[4], m0[7], m0[2], m0[5], m0[8]]; // 正交矩阵转置=逆
         R = mul3(mul3(m0, R), mT).map(round3);
       }
     }
-    this._transformSelected(R);
+    this._transformSelected(R, pivotMode);
   }
   rotatePendingBy(axis, deg, local = false) {
     if (!deg) return;
@@ -822,6 +982,76 @@ export class BrickEditor {
   exportImage() {
     this.renderer.render(this.scene, this.camera);
     return this.renderer.domElement.toDataURL('image/png');
+  }
+
+  // 高性能模式:关阴影 + 隐藏边线(大模型流畅度显著提升)
+  setPerfMode(v) {
+    this.perfMode = !!v;
+    this.renderer.shadowMap.enabled = !this.perfMode;
+    this.scene.traverse(o => {
+      if (o.isDirectionalLight) o.castShadow = !this.perfMode;
+    });
+    this._updateEdgeGroupVisible();
+    for (const { mesh } of this.partLib.materials.values()) mesh.needsUpdate = true;
+    // three 需要重编译阴影材质
+    this.renderer.shadowMap.needsUpdate = true;
+  }
+
+  // 步骤预览:fn(brick)=>bool 决定可见;null 恢复全部
+  setVisibleFilter(fn) {
+    this._visFilter = fn;
+    for (const b of this.bricks) {
+      const vis = fn ? !!fn(b) : true;
+      this.pool.setVisible(b.handle, vis);
+      if (b.edgeObj) b.edgeObj.visible = vis;
+    }
+    this._refreshSelOutline(); // 隐藏的零件不应留下描边
+  }
+
+  // 兼容/调试:零件的世界坐标(场景坐标系,含 LDraw 翻转)
+  getBrickWorldPos(id) {
+    const b = this.bricks.find(x => x.id === id);
+    if (!b) return null;
+    this.root.updateWorldMatrix(true, false);
+    const v = new THREE.Vector3(b.x, b.y, b.z).applyMatrix4(this.root.matrixWorld);
+    return { x: v.x, y: v.y, z: v.z };
+  }
+
+  // 兼容/调试:零件实体是否可见(步骤预览过滤后的状态)
+  isBrickVisible(id) {
+    const b = this.bricks.find(x => x.id === id);
+    return b ? !!(b.handle && b.handle.visible) : false;
+  }
+
+  // 兼容/调试:零件边线当前是否实际可见(含 perfMode / EDGE_LIMIT 总开关)
+  isBrickEdgeVisible(id) {
+    const b = this.bricks.find(x => x.id === id);
+    return !!(b && b.edgeObj && b.edgeObj.visible && this.edgeGroup.visible);
+  }
+
+  // 全部零件的世界包围盒(含隐藏零件,与旧 Box3.setFromObject(brickGroup) 语义一致)
+  _worldBox() {
+    const local = this.pool.boundingBox();
+    if (local.isEmpty()) return null;
+    this.root.updateWorldMatrix(true, false);
+    return local.applyMatrix4(this.root.matrixWorld);
+  }
+
+  // 快捷视角
+  setView(kind) {
+    const box = (this.bricks.length && this._worldBox())
+      || new THREE.Box3(new THREE.Vector3(-100, 0, -100), new THREE.Vector3(100, 100, 100));
+    const c = box.getCenter(new THREE.Vector3());
+    const size = Math.max(box.getSize(new THREE.Vector3()).length(), 200);
+    const d = size * 1.4;
+    const pos = {
+      top:   [c.x, c.y + d, c.z + 0.01],
+      front: [c.x, c.y + d * 0.1, c.z + d],
+      side:  [c.x + d, c.y + d * 0.1, c.z],
+      iso:   [c.x + d * 0.62, c.y + d * 0.55, c.z + d * 0.62],
+    }[kind] || [c.x + d * 0.62, c.y + d * 0.55, c.z + d * 0.62];
+    this.controls.target.copy(c);
+    this.camera.position.set(...pos);
   }
 
   async duplicateSelected() {
@@ -896,7 +1126,7 @@ export class BrickEditor {
   _serialize() {
     return this.bricks.map(b => ({
       id: b.id, partId: b.partId, colorCode: b.colorCode,
-      x: b.x, y: b.y, z: b.z, m: [...b.m], group: b.group,
+      x: b.x, y: b.y, z: b.z, m: [...b.m], group: b.group, step: b.step,
     }));
   }
 
@@ -907,8 +1137,13 @@ export class BrickEditor {
     this._notifyHistory();
   }
 
+  _clearSceneObjects() {
+    this.pool.clear();
+    this.edgeGroup.clear();
+  }
+
   async _restore(list) {
-    this.brickGroup.clear();
+    this._clearSceneObjects();
     this.bricks = [];
     this.selection.clear();
     this._afterSelectionChange();
@@ -946,12 +1181,14 @@ export class BrickEditor {
 
   async loadBricks(list) {
     this._snapshot();
-    this.brickGroup.clear();
+    this._clearSceneObjects();
     this.bricks = [];
     this.selection.clear();
     this._afterSelectionChange();
+    const gen = (this._loadGen = (this._loadGen || 0) + 1);
     const failed = [];
     for (const rec of list) {
+      if (this._loadGen !== gen) return failed; // 加载途中被新建/再次打开打断,停止追加
       try { await this._addBrick({ ...rec, m: [...(rec.m || IDENTITY)], info: null }); }
       catch { failed.push(rec.partId); }
     }
@@ -961,9 +1198,10 @@ export class BrickEditor {
   }
 
   async clearAll() {
+    this._loadGen = (this._loadGen || 0) + 1; // 打断进行中的 loadBricks
     if (!this.bricks.length) return;
     this._snapshot();
-    this.brickGroup.clear();
+    this._clearSceneObjects();
     this.bricks = [];
     this.selection.clear();
     this._afterSelectionChange();
@@ -972,7 +1210,8 @@ export class BrickEditor {
 
   fitCamera() {
     if (!this.bricks.length) return;
-    const worldBox = new THREE.Box3().setFromObject(this.brickGroup);
+    const worldBox = this._worldBox();
+    if (!worldBox) return;
     const center = worldBox.getCenter(new THREE.Vector3());
     const size = worldBox.getSize(new THREE.Vector3()).length() || 200;
     this.controls.target.copy(center);

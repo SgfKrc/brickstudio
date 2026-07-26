@@ -1,5 +1,5 @@
 // 简单的缓存优先 Service Worker:应用外壳 + 零件文件离线可用
-const CACHE = 'brickstudio-v1';
+const CACHE = 'brickstudio-v2';
 const SHELL = ['./', './index.html', './assets/app.js', './assets/styles.css', './manifest.json'];
 
 self.addEventListener('install', e => {
@@ -15,6 +15,8 @@ self.addEventListener('activate', e => {
 
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
+  // API 永不缓存(模型库/自动保存要实时)
+  if (new URL(e.request.url).pathname.startsWith('/api/')) return;
   e.respondWith(
     caches.match(e.request).then(hit => {
       if (hit) return hit;

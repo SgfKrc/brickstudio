@@ -6,3 +6,14 @@ three-0.180/
 *.log
 .DS_Store
 Thumbs.db
+
+# 构建产物
+BrickStudio.apk
+release/
+
+# Android
+android/.gradle/
+android/.gradle-dist/
+android/keystore.properties
+android/app/*.keystore
+android/local.properties

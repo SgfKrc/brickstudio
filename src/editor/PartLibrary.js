@@ -1,8 +1,9 @@
 // 零件几何库 v2:LDrawLoader 加载 + 材质缓存 + 缩略图队列 +
 // 连接元数据(柱钉列表、本体碰撞盒、底面反柱钉格)。
 import * as THREE from 'three';
-import { LDrawLoader } from 'three/examples/jsm/loaders/LDrawLoader.js';
-import { LDrawConditionalLineMaterial } from 'three/examples/jsm/materials/LDrawConditionalLineMaterial.js';
+import { LDrawLoader } from 'three/addons/loaders/LDrawLoader.js';
+import { LDrawConditionalLineMaterial } from 'three/addons/materials/LDrawConditionalLineMaterial.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { colorByCode } from '../colors.js';
 import { partFile, partStuds } from '../parts-catalog.js';
 
@@ -38,6 +39,51 @@ async function gunzipB64(b64) {
   const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
   const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
   return await new Response(stream).text();
+}
+
+// 把零件 Group 的所有 Mesh / 非条件线 LineSegments 几何烘焙 matrixWorld 后各自合并。
+// 注意属性一致性:solid 只保留 position/normal(缺 normal 时补算),edge 只保留 position;
+// 索引/非索引混用时统一转非索引,避免 mergeGeometries 失败。
+function buildMergedGeometry(group) {
+  const solids = [], edges = [];
+  group.traverse(c => {
+    if (!c.geometry || !c.geometry.attributes || !c.geometry.attributes.position) return;
+    if (c.isMesh) {
+      const g = c.geometry.clone();
+      g.applyMatrix4(c.matrixWorld);
+      if (!g.attributes.normal) g.computeVertexNormals();
+      for (const name of Object.keys(g.attributes)) {
+        if (name !== 'position' && name !== 'normal') g.deleteAttribute(name);
+      }
+      g.morphAttributes = {};
+      g.clearGroups();
+      solids.push(g);
+    } else if (c.isLineSegments && !c.isConditionalLine) {
+      const m = c.material;
+      if (m && (m.isLDrawConditionalLineMaterial || m.name === 'Conditional Material')) return;
+      const g = c.geometry.clone();
+      g.applyMatrix4(c.matrixWorld);
+      for (const name of Object.keys(g.attributes)) {
+        if (name !== 'position') g.deleteAttribute(name);
+      }
+      g.morphAttributes = {};
+      g.clearGroups();
+      edges.push(g);
+    }
+  });
+  const unify = list => {
+    if (list.some(g => !g.index) && list.some(g => g.index)) {
+      return list.map(g => (g.index ? g.toNonIndexed() : g));
+    }
+    return list;
+  };
+  const mergeSafe = list => {
+    if (!list.length) return null;
+    const geo = list.length === 1 ? list[0] : mergeGeometries(unify(list), false);
+    if (geo) { geo.computeBoundingBox(); geo.computeBoundingSphere(); }
+    return geo;
+  };
+  return { solidGeo: mergeSafe(solids), edgeGeo: mergeSafe(edges) };
 }
 
 export class PartLibrary {
@@ -156,7 +202,11 @@ export class PartLibrary {
         for (const cz of cellsAlong(body.minZ, body.maxZ))
           cells.push({ x: cx, y: body.maxY, z: cz });
 
-      return { group, bbox, body, studs, cells };
+      // 合并几何缓存(InstancedMesh 用):
+      // solidGeo = 所有 Mesh 几何按 matrixWorld 烘焙后合并;edgeGeo = 非条件线合并。
+      const { solidGeo, edgeGeo } = buildMergedGeometry(group);
+
+      return { group, bbox, body, studs, cells, solidGeo, edgeGeo };
     })();
     this.cache.set(partId, p);
     p.catch(() => this.cache.delete(partId));

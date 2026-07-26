@@ -3,7 +3,9 @@
 //  - 复制零件及全部递归依赖到 public/ldraw/
 //  - 递归解析 stud* 基元引用,精确提取每个零件的柱钉位置与朝向(卡扣/SNOT 检测数据)
 //  - 生成 src/parts-meta.gen.json:{ id: { d:描述, c:类别, s:[[x,y,z,dx,dy,dz],..] | g:[x0,z0,nx,nz,y] } }
-// 用法: node tools/pack-parts.mjs <ldraw库根目录>
+// 用法: node tools/pack-parts.mjs <ldraw库根目录> [--full]
+//   --full: 额外收录人仔/动物/火车/船/电子/全科技等重资源类(约 +3400 零件、+160MB 磁盘)。
+//           适合前后端版(零件按需加载,只占磁盘不占内存);单文件版勿用。
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,6 +38,13 @@ const KEEP_CATS = new Set(['Brick', 'Plate', 'Tile', 'Slope', 'Arch', 'Cylinder'
   // v4 扩充:车辆体系
   'Wheel', 'Tyre', 'Vehicle', 'Car', 'Windscreen', 'Plane', 'Cockpit', 'Tail', 'Wing',
   'Propeller', 'Exhaust', 'Tipper', 'Tractor', 'Trailer', 'Crane', 'Winch']);
+
+// --full 档:重资源类(仅推荐前后端版使用)
+const FULL = process.argv.includes('--full');
+const FULL_CATS = new Set(['Minifig', 'Minifig Accessory', 'Minifig Headwear', 'Minifig Neckwear',
+  'Minifig Footwear', 'Minifig Hipwear', 'Figure', 'Figure Accessory', 'Animal',
+  'Train', 'Monorail', 'Boat', 'Electric', 'Sphere', 'Rock', 'Staircase']);
+if (FULL) for (const c of FULL_CATS) KEEP_CATS.add(c);
 // 保留 v1 手选零件,保证旧文件兼容
 const LEGACY = ['3005','3004','3622','3010','3009','3008','3003','3002','3001','2456','3007','2357',
   '3024','3023','3623','3710','3666','3460','3022','3021','3020','3795','3034','3031','3032','3035',
@@ -59,7 +68,7 @@ for (const f of fs.readdirSync(partsDir)) {
   let keep = false;
   if (KEEP_CATS.has(cat)) keep = true;
   if (cat === 'Baseplate') keep = /^Baseplate\s+\d+\s*x\s*\d+$/i.test(desc);
-  if (cat === 'Technic') keep = /^Technic\s+(Brick|Beam|Axle(?!\s+Flexible)|Pin\b|Bush|Cross Block|Connector)/i.test(desc);
+  if (cat === 'Technic') keep = FULL || /^Technic\s+(Brick|Beam|Axle(?!\s+Flexible)|Pin\b|Bush|Cross Block|Connector)/i.test(desc);
   // 太长的异形描述通常是特殊件,粗过滤降低噪音
   if (keep && desc.length > 90) keep = false;
   if (keep) selected.set(id.toLowerCase(), { desc, cat: cat === 'Baseplate' ? 'Baseplate' : cat });

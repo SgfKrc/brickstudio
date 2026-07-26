@@ -30,20 +30,54 @@ function fmt(n) {
   return String(r);
 }
 
-export function serializeLDR(bricks, groups = null, modelName = 'BrickStudio Model') {
+// 按"层"给零件排序分步:LDraw +Y 向下,y 越大越靠近地面 → 从地面往上搭。
+// 返回 [[brick,...], ...](每层一步)。若零件带显式 step(来自含 0 STEP 的文件),优先按 step 分组。
+export function stepGroups(bricks) {
+  if (!bricks.length) return [];
+  if (bricks.some(b => (b.step ?? 0) > 0)) {
+    const map = new Map();
+    for (const b of bricks) {
+      const s = b.step ?? 0;
+      if (!map.has(s)) map.set(s, []);
+      map.get(s).push(b);
+    }
+    return [...map.entries()].sort((a, b) => a[0] - b[0]).map(e => e[1]);
+  }
+  // 以零件底面高度分层(量化到 4 LDU,容忍非整层零件)
+  const byLayer = new Map();
+  for (const b of bricks) {
+    const key = Math.round(b.y / 4) * 4;
+    if (!byLayer.has(key)) byLayer.set(key, []);
+    byLayer.get(key).push(b);
+  }
+  return [...byLayer.entries()].sort((a, b) => b[0] - a[0]).map(e =>
+    e[1].sort((p, q) => (p.z - q.z) || (p.x - q.x)));
+}
+
+export function serializeLDR(bricks, groups = null, modelName = 'BrickStudio Model', opts = {}) {
   const lines = [];
   lines.push(`0 ${modelName}`);
   lines.push(`0 Name: model.ldr`);
   lines.push(`0 Author: BrickStudio`);
   lines.push(`0 !LDRAW_ORG Unofficial_Model`);
   const lineIndex = new Map(); // brickId -> 零件行序号
-  for (const b of bricks) {
+  const emit = (b) => {
     lineIndex.set(b.id, lineIndex.size);
     const m = b.m || IDENTITY;
     lines.push(
       `1 ${b.colorCode} ${fmt(b.x)} ${fmt(b.y)} ${fmt(b.z)} ` +
       m.map(fmt).join(' ') + ` ${b.partId}.dat`
     );
+  };
+  if (opts.steps) {
+    // 按层导出并插入 0 STEP,BrickLink Studio / LeoCAD 会显示为搭建步骤
+    const groups2 = stepGroups(bricks);
+    groups2.forEach((layer, i) => {
+      for (const b of layer) emit(b);
+      if (i < groups2.length - 1) lines.push('0 STEP');
+    });
+  } else {
+    for (const b of bricks) emit(b);
   }
   // 分组元数据
   const groupIds = new Map();
@@ -93,6 +127,7 @@ export function parseLDR(text) {
   };
 
   // 递归展开;parent = {m, x, y, z, color}
+  const stepRef = { n: 0, used: false };
   const walk = (lines, parent, depth, stack, isMain) => {
     for (const raw of lines) {
       const line = raw.trim();
@@ -100,6 +135,7 @@ export function parseLDR(text) {
       if (isMain) {
         const gm = line.match(/^0\s+!BRICKSTUDIO\s+GROUP\s+\S+:\s*([\d\s]+)$/i);
         if (gm) { groupLines.push(gm[1].trim().split(/\s+/).map(Number)); continue; }
+        if (/^0\s+STEP\s*$/i.test(line)) { stepRef.n++; stepRef.used = true; continue; }
       }
       if (!line.startsWith('1 ')) continue;
       const tok = line.split(/\s+/);
@@ -132,6 +168,7 @@ export function parseLDR(text) {
           x: pos.x, y: pos.y, z: pos.z,
           m: wm,
           group: null,
+          step: stepRef.n,
         });
       }
     }
@@ -150,16 +187,8 @@ export function parseLDR(text) {
   return { bricks, warnings };
 }
 
+import { saveTextFile } from './save-file.js';
+
 export function downloadText(filename, text) {
-  const blob = new Blob([text], { type: 'text/plain' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(() => {
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }, 100);
+  saveTextFile(text, filename);
 }

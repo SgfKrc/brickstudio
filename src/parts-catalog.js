@@ -17,9 +17,16 @@ const CAT_MAP = {
   Tipper: 'vehicle', Tractor: 'vehicle', Trailer: 'vehicle', Crane: 'vehicle', Winch: 'vehicle',
   Technic: 'technic', Baseplate: 'baseplate',
   Container: 'misc', Homemaker: 'misc', Tap: 'misc',
+  // --full 档才会出现的类别
+  'Minifig': 'minifig', 'Minifig Accessory': 'minifig', 'Minifig Headwear': 'minifig',
+  'Minifig Neckwear': 'minifig', 'Minifig Footwear': 'minifig', 'Minifig Hipwear': 'minifig',
+  'Figure': 'minifig', 'Figure Accessory': 'minifig',
+  'Animal': 'animal',
+  'Train': 'train', 'Monorail': 'train', 'Boat': 'train',
+  'Electric': 'electric',
 };
 
-export const CATEGORIES = [
+const ALL_CATEGORIES = [
   { id: 'recent', name: '⭐常用' },
   { id: 'brick', name: '砖' },
   { id: 'plate', name: '板' },
@@ -34,6 +41,10 @@ export const CATEGORIES = [
   { id: 'snot', name: '支架/铰链' },
   { id: 'technic', name: '科技' },
   { id: 'baseplate', name: '底板' },
+  { id: 'minifig', name: '人仔' },
+  { id: 'animal', name: '动物' },
+  { id: 'train', name: '火车/船' },
+  { id: 'electric', name: '电子' },
   { id: 'misc', name: '容器/其他' },
 ];
 
@@ -62,6 +73,11 @@ const ZH_WORDS = [
   [/^Tipper/i, '翻斗'], [/^Tractor/i, '拖拉机'], [/^Trailer/i, '拖车'],
   [/^Technic Beam/i, '科技梁'], [/^Technic Axle/i, '科技轴'], [/^Technic Pin/i, '科技销'],
   [/^Technic Bush/i, '科技轴套'], [/^Technic Cross Block/i, '科技十字块'], [/^Technic Connector/i, '科技连接器'],
+  [/^Minifig Head/i, '人仔头'], [/^Minifig Torso/i, '人仔躯干'], [/^Minifig Leg/i, '人仔腿'],
+  [/^Minifig Hips/i, '人仔胯'], [/^Minifig Arm/i, '人仔手臂'], [/^Minifig Hand/i, '人仔手'],
+  [/^Minifig Hair/i, '人仔头发'], [/^Minifig Helmet/i, '人仔头盔'], [/^Minifig Cap/i, '人仔帽'],
+  [/^Minifig/i, '人仔'], [/^Figure/i, '人偶'], [/^Animal/i, '动物'],
+  [/^Train/i, '火车'], [/^Monorail/i, '单轨'], [/^Boat/i, '船'], [/^Electric/i, '电子'],
 ];
 const ZH_EXTRA = [
   [/Corner/i, '转角'], [/Inverted/i, '倒'], [/with Stud(s)? on (1 )?Side(s)?/i, '侧带柱钉'],
@@ -94,6 +110,8 @@ const CN_KEYWORDS = [
   ['天线', 'antenna'], ['玻璃', 'glass'], ['箱', 'box'], ['桶', 'barrel'], ['柜', 'cupboard'],
   ['容器', 'container'], ['球', 'sphere'], ['磁铁', 'magnet'], ['起重机', 'crane'], ['梁', 'beam'],
   ['轴', 'axle'], ['销', 'pin'], ['车库', 'garage'], ['路牌', 'roadsign'], ['水龙头', 'tap'],
+  ['人仔', 'minifig'], ['头盔', 'helmet'], ['头发', 'hair'], ['躯干', 'torso'],
+  ['动物', 'animal'], ['火车', 'train'], ['船', 'boat'], ['电子', 'electric'], ['马达', 'motor'],
 ];
 
 export const PARTS = Object.entries(META).filter(([, m]) => !m.h).map(([id, m]) => ({
@@ -102,6 +120,10 @@ export const PARTS = Object.entries(META).filter(([, m]) => !m.h).map(([id, m]) 
   en: m.d,
   cat: CAT_MAP[m.c] || 'misc',
 })).sort((a, b) => a.en.localeCompare(b.en, 'en', { numeric: true }));
+
+// 只显示实际有零件的页签(标准档没有人仔/动物等时自动隐藏)
+export const CATEGORIES = ALL_CATEGORIES.filter(c =>
+  c.id === 'recent' || PARTS.some(p => p.cat === c.id));
 
 const byId = new Map(Object.entries(META).map(([id, m]) => [id, { id, name: zhName(m.d), en: m.d }]));
 

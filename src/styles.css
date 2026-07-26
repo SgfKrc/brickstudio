@@ -6,6 +6,24 @@ body {
 }
 
 .app { display: flex; flex-direction: column; height: 100%; }
+.main { flex: 1; display: flex; min-height: 0; }
+
+/* ---- 左侧面板布局 ---- */
+.palette-left {
+  width: 292px; flex: 0 0 292px;
+  border-top: none !important; border-right: 1px solid #30343b;
+  display: flex; flex-direction: column; min-height: 0;
+  padding-bottom: 0 !important;
+}
+.palette-left .cats { flex-wrap: wrap; overflow-x: visible; }
+.palette-left .parts {
+  flex: 1; flex-wrap: wrap; align-content: flex-start;
+  overflow-y: auto; overflow-x: hidden;
+}
+.palette-left .part-btn { width: 84px; }
+.layout-left .selbar { bottom: 20px; }
+.layout-left .stepbar { bottom: 28px; }
+.layout-left .toast { bottom: 48px; }
 
 /* 顶栏 */
 .topbar {
@@ -95,6 +113,11 @@ body {
 .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); gap: 8px; max-height: 40vh; overflow-y: auto; }
 .sw { aspect-ratio: 1; border-radius: 10px; border: 2px solid rgba(255,255,255,.12); }
 .sw.on { border-color: #fff; box-shadow: 0 0 0 2px #2b5cd9; }
+.recent-colors { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.rc-label { font-size: 12px; color: #8a919c; }
+.sw-sm { width: 34px; height: 34px; flex: 0 0 auto; }
+.bom-row.clickable { cursor: pointer; }
+.bom-row.clickable:active { background: #2c313a; }
 
 /* 角度旋转面板 */
 .rot-axes { display: flex; gap: 8px; margin-bottom: 10px; }
@@ -128,6 +151,34 @@ body {
 .bom-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bom-color { color: #8a919c; font-size: 12px; }
 .bom-n { font-weight: 700; min-width: 34px; text-align: right; }
+
+.bom-actions { float: right; display: inline-flex; gap: 6px; }
+
+/* 步骤预览条 */
+.stepbar {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: 200px; z-index: 25;
+  display: flex; align-items: center; gap: 8px;
+  background: rgba(35, 38, 44, .96); padding: 10px 12px; border-radius: 14px;
+  border: 1px solid #3a3f47; box-shadow: 0 4px 18px rgba(0,0,0,.4);
+  width: min(92vw, 420px);
+}
+.stepbar input[type=range] { flex: 1; accent-color: #2b5cd9; }
+.step-label { font-size: 12px; color: #aab2bc; white-space: nowrap; }
+
+/* 菜单里的视角行 */
+.view-row { display: flex; gap: 6px; padding: 4px 10px; }
+.view-row button {
+  flex: 1; border: 1px solid #3a3f47 !important; background: #2c313a !important;
+  text-align: center !important; padding: 8px 0 !important; border-radius: 8px !important;
+  font-size: 13px !important;
+}
+
+.lib-btn {
+  border: none; border-radius: 8px; background: #2b5cd9; color: #fff;
+  padding: 7px 12px; font-size: 12px; margin-left: 6px; flex: 0 0 auto;
+}
+.lib-btn.danger { background: #7a2b2b; }
 
 .menu {
   position: absolute; left: 10px; top: calc(env(safe-area-inset-top, 0px) + 58px);
