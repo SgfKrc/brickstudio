@@ -1,0 +1,23 @@
+{
+  "name": "brickstudio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A mobile-friendly LEGO-style brick builder (LDraw compatible), similar to LEGO Digital Designer / BrickLink Studio.",
+  "scripts": {
+    "dev": "node tools/dev.mjs",
+    "build": "esbuild src/main.jsx --outdir=dist/assets --minify --format=esm --entry-names=app --bundle",
+    "serve": "node tools/serve.mjs"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true
+  }
+}

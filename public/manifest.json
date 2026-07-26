@@ -1,0 +1,14 @@
+{
+  "name": "BrickStudio 积木设计",
+  "short_name": "BrickStudio",
+  "description": "移动端乐高式积木搭建设计器,兼容 LDraw 格式",
+  "start_url": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#1a1c20",
+  "theme_color": "#1a1c20",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

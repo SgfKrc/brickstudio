@@ -1,0 +1,149 @@
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+html, body, #root { height: 100%; overflow: hidden; }
+body {
+  font-family: system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background: #1a1c20; color: #e8eaed; user-select: none;
+}
+
+.app { display: flex; flex-direction: column; height: 100%; }
+
+/* 顶栏 */
+.topbar {
+  display: flex; align-items: center; gap: 6px;
+  padding: calc(env(safe-area-inset-top, 0px) + 8px) 10px 8px;
+  background: #23262c; border-bottom: 1px solid #30343b; z-index: 10;
+}
+.title { flex: 1; font-weight: 700; font-size: 16px; letter-spacing: .5px; }
+.count { color: #8a919c; font-weight: 400; font-size: 13px; }
+.tb-btn {
+  width: 40px; height: 40px; border: none; border-radius: 10px;
+  background: #2e323a; color: #e8eaed; font-size: 18px;
+}
+.tb-btn:disabled { opacity: .35; }
+.tb-btn:active { background: #3a4048; }
+.tb-btn.swatch { border: 2px solid #565d68; }
+
+/* 视图 */
+.viewport { flex: 1; position: relative; min-height: 0; }
+.viewport canvas { display: block; }
+.loading {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: #8a919c; font-size: 14px; pointer-events: none;
+}
+
+/* 模式条 */
+.modes {
+  position: absolute; right: 8px; top: calc(env(safe-area-inset-top, 0px) + 64px);
+  display: flex; flex-direction: column; gap: 6px; z-index: 5;
+}
+.mode-btn {
+  width: 54px; padding: 6px 0 4px; border: none; border-radius: 12px;
+  background: rgba(40, 44, 51, .92); color: #aab2bc; font-size: 10px;
+  display: flex; flex-direction: column; align-items: center; gap: 1px;
+  border: 1px solid #343941;
+}
+.mode-btn .mi { font-size: 18px; }
+.mode-btn.on { background: #2b5cd9; color: #fff; border-color: #2b5cd9; }
+
+/* 选中操作条 */
+.selbar {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  bottom: 178px; z-index: 6;
+  display: flex; gap: 6px; align-items: center;
+  background: rgba(35, 38, 44, .95); padding: 8px 10px; border-radius: 14px;
+  border: 1px solid #3a3f47; box-shadow: 0 4px 18px rgba(0,0,0,.4);
+  max-width: 96vw; overflow-x: auto; white-space: nowrap;
+}
+.sel-info { font-size: 12px; color: #9aa3ad; padding: 0 4px; }
+.selbar button {
+  border: none; border-radius: 9px; background: #323741; color: #e8eaed;
+  padding: 8px 10px; font-size: 13px;
+}
+.selbar button.danger { background: #7a2b2b; }
+
+/* 零件面板 */
+.palette { background: #23262c; border-top: 1px solid #30343b; padding-bottom: env(safe-area-inset-bottom, 0px); }
+.pal-head { display: flex; align-items: center; gap: 6px; padding: 8px 8px 0; }
+.search {
+  flex: 1; border: 1px solid #3a3f47; border-radius: 10px; background: #1c1f24;
+  color: #e8eaed; padding: 8px 12px; font-size: 13px; outline: none;
+}
+.search:focus { border-color: #2b5cd9; }
+.clear-q { border: none; background: #323741; color: #aab2bc; border-radius: 8px; width: 34px; height: 34px; }
+.no-result { color: #6f7883; font-size: 13px; padding: 16px; }
+.cats { display: flex; gap: 2px; overflow-x: auto; padding: 6px 8px 0; }
+.cat-btn {
+  border: none; background: none; color: #8a919c; font-size: 13px;
+  padding: 6px 12px; border-radius: 8px 8px 0 0; white-space: nowrap;
+}
+.cat-btn.on { color: #fff; background: #2c313a; font-weight: 600; }
+.parts { display: flex; gap: 8px; overflow-x: auto; padding: 8px; background: #2c313a; }
+.part-btn {
+  flex: 0 0 auto; width: 74px; border: 1px solid #3a3f47; border-radius: 10px;
+  background: #23262c; padding: 4px; display: flex; flex-direction: column; align-items: center;
+  color: #cdd3da;
+}
+.part-btn img { width: 56px; height: 56px; object-fit: contain; }
+.part-ph { width: 56px; height: 56px; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #6f7883; }
+.part-name { font-size: 10px; padding: 2px 0 3px; white-space: nowrap; overflow: hidden; max-width: 68px; text-overflow: ellipsis; }
+.part-btn.on { border-color: #2b5cd9; background: #24304d; color: #fff; }
+
+/* 弹层 */
+.sheet-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 20; display: flex; align-items: flex-end; }
+.sheet { width: 100%; background: #262a31; border-radius: 16px 16px 0 0; padding: 14px 14px calc(env(safe-area-inset-bottom, 0px) + 16px); }
+.sheet-title { font-size: 14px; color: #9aa3ad; margin-bottom: 10px; }
+.swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); gap: 8px; max-height: 40vh; overflow-y: auto; }
+.sw { aspect-ratio: 1; border-radius: 10px; border: 2px solid rgba(255,255,255,.12); }
+.sw.on { border-color: #fff; box-shadow: 0 0 0 2px #2b5cd9; }
+
+/* 角度旋转面板 */
+.rot-axes { display: flex; gap: 8px; margin-bottom: 10px; }
+.axis-btn {
+  flex: 1; border: 1px solid #3a3f47; background: #1c1f24; color: #cdd3da;
+  padding: 10px 0; border-radius: 10px; font-size: 14px;
+}
+.axis-btn.on { border-color: #2b5cd9; background: #24304d; color: #fff; font-weight: 600; }
+.rot-quick { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 10px; }
+.rot-quick button {
+  border: 1px solid #3a3f47; background: #2c313a; color: #e8eaed;
+  padding: 10px 0; border-radius: 10px; font-size: 14px;
+}
+.rot-custom { display: flex; gap: 8px; }
+.rot-custom input {
+  flex: 1; border: 1px solid #3a3f47; border-radius: 10px; background: #1c1f24;
+  color: #e8eaed; padding: 10px 12px; font-size: 14px; outline: none; min-width: 0;
+}
+.rot-custom button {
+  border: none; background: #2b5cd9; color: #fff; border-radius: 10px;
+  padding: 10px 12px; font-size: 13px; white-space: nowrap;
+}
+
+/* 零件清单 */
+.bom { max-height: 46vh; overflow-y: auto; }
+.bom-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 4px;
+  border-bottom: 1px solid #2e333a; font-size: 13px;
+}
+.bom-sw { width: 18px; height: 18px; border-radius: 5px; border: 1px solid rgba(255,255,255,.2); flex: 0 0 auto; }
+.bom-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bom-color { color: #8a919c; font-size: 12px; }
+.bom-n { font-weight: 700; min-width: 34px; text-align: right; }
+
+.menu {
+  position: absolute; left: 10px; top: calc(env(safe-area-inset-top, 0px) + 58px);
+  background: #262a31; border: 1px solid #343941; border-radius: 14px; padding: 6px;
+  display: flex; flex-direction: column; min-width: 220px; box-shadow: 0 8px 30px rgba(0,0,0,.5);
+}
+.menu button {
+  border: none; background: none; color: #e8eaed; text-align: left;
+  padding: 12px 12px; font-size: 14px; border-radius: 8px;
+}
+.menu button:active { background: #323741; }
+.menu-tip { font-size: 11px; color: #7b828c; line-height: 1.7; padding: 8px 12px 6px; border-top: 1px solid #343941; margin-top: 4px; }
+
+.toast {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: 190px;
+  background: rgba(20, 22, 25, .92); color: #fff; font-size: 13px;
+  padding: 10px 16px; border-radius: 999px; z-index: 30; max-width: 90vw;
+  border: 1px solid #3a3f47;
+}
