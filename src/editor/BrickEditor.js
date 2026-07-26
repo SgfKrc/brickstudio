@@ -21,6 +21,8 @@ const TINT_SELECT = [0.72, 0.82, 1.25];
 const TINT_INVALID = [1.25, 0.5, 0.5];
 const TAP_MS = 600;
 const TAP_PX = 10;
+// 触屏拖动时零件相对手指上移的像素数(手指不再遮挡零件和落点)
+const DRAG_LIFT_PX = 64;
 const UNDO_MAX = 100;
 const CONNECT_PLANE_TOL = 1.6;  // 柱钉基面与底面格的法向距离容差
 const CONNECT_XY_TOL = 2.6;     // 面内偏移容差
@@ -164,11 +166,21 @@ export class BrickEditor {
 
   // ---------- 几何工具 ----------
   _ndc(ev) {
+    return this._ndcXY(ev.clientX, ev.clientY);
+  }
+
+  _ndcXY(cx, cy) {
     const r = this.renderer.domElement.getBoundingClientRect();
     return new THREE.Vector2(
-      ((ev.clientX - r.left) / r.width) * 2 - 1,
-      -((ev.clientY - r.top) / r.height) * 2 + 1
+      ((cx - r.left) / r.width) * 2 - 1,
+      -((cy - r.top) / r.height) * 2 + 1
     );
+  }
+
+  /** 触屏拖动时把作用点抬到手指上方,避免手指挡住零件与落点 */
+  _liftedXY(ev) {
+    const lift = (this._ptr && this._ptr.touch) ? DRAG_LIFT_PX : 0;
+    return { x: ev.clientX, y: ev.clientY - lift };
   }
 
   _toLDraw(p) { return { x: p.x, y: -p.y, z: -p.z }; }
@@ -316,6 +328,52 @@ export class BrickEditor {
 
   // Studio 式连接吸附:在指针点 P 附近搜索柱钉,把零件底面格对齐上去。
   // 返回 {x,y,z} 或 null(附近无可用连接)。姿态 m 保持不变。
+  // 收集附近所有可用落点(按到指针的距离排序,已排除会碰撞的)。
+  // 返回 [{x,y,z,stud:{x,y,z,dx,dy,dz}}, ...] —— 拖动时用来画候选环。
+  _snapCandidates(info, m, P, excludeIds = new Set(), radius = 42, max = 6) {
+    if (!isGridM(m) || !this.connectCheck) return [];
+    const n = apply3(m, 0, 1, 0);
+    const mc = info.cells.map(c => apply3(m, c.x, c.y, c.z));
+    const bc = apply3(m,
+      (info.body.minX + info.body.maxX) / 2,
+      (info.body.minY + info.body.maxY) / 2,
+      (info.body.minZ + info.body.maxZ) / 2);
+    const cands = [];
+    let studCount = 0;
+    for (const b of this.bricks) {
+      if (excludeIds.has(b.id)) continue;
+      const wb = this._worldBody(b);
+      if (wb.x0 > P.x + radius + 20 || wb.x1 < P.x - radius - 20 ||
+          wb.z0 > P.z + radius + 20 || wb.z1 < P.z - radius - 20) continue;
+      for (const s of this._worldStuds(b)) {
+        if (Math.abs(s.x - P.x) > radius || Math.abs(s.z - P.z) > radius || Math.abs(s.y - P.y) > radius) continue;
+        if (s.dx * n[0] + s.dy * n[1] + s.dz * n[2] > -0.9) continue;
+        if (++studCount > 48) break;
+        let best = null;
+        for (const c of mc) {
+          const tx = s.x - c[0], ty = s.y - c[1], tz = s.z - c[2];
+          const cx2 = tx + bc[0] - P.x, cy2 = ty + bc[1] - P.y, cz2 = tz + bc[2] - P.z;
+          const d = cx2 * cx2 + cy2 * cy2 + cz2 * cz2;
+          if (!best || d < best.d) best = { d, x: tx, y: ty, z: tz };
+        }
+        if (best) cands.push({ ...best, stud: s });
+      }
+    }
+    cands.sort((a, b) => a.d - b.d);
+    const out = [];
+    const seen = new Set();
+    for (const c of cands) {
+      if (out.length >= max) break;
+      const key = `${Math.round(c.x)},${Math.round(c.y)},${Math.round(c.z)}`;
+      if (seen.has(key)) continue;           // 同一落点可能被多个柱钉命中
+      seen.add(key);
+      const rec = { info, m, x: round3(c.x), y: round3(c.y), z: round3(c.z) };
+      if (this._collides(rec, excludeIds)) continue;
+      out.push({ x: rec.x, y: rec.y, z: rec.z, stud: c.stud });
+    }
+    return out;
+  }
+
   _connectionSnap(info, m, P, excludeIds = new Set(), radius = 42) {
     if (!isGridM(m) || !this.connectCheck) return null;
     const n = apply3(m, 0, 1, 0); // 底面外法向
@@ -355,9 +413,70 @@ export class BrickEditor {
     return null;
   }
 
+  // ---------- 落点候选标记(解决手指遮挡:把可选落点画成放大的环) ----------
+  _ensureMarkers() {
+    if (this.markerGroup) return;
+    this.markerGroup = new THREE.Group();
+    this.markerGroup.renderOrder = 998;
+    this.root.add(this.markerGroup);
+    // 环朝向 +Y(LDraw 里柱钉朝上是 -Y),默认躺平
+    this._markerGeo = new THREE.RingGeometry(7, 12, 24);
+    this._markerGeo.rotateX(Math.PI / 2);
+    this._matChosen = new THREE.MeshBasicMaterial({
+      color: 0x5fe08a, transparent: true, opacity: 0.95,
+      depthTest: false, side: THREE.DoubleSide,
+    });
+    this._matOther = new THREE.MeshBasicMaterial({
+      color: 0xffffff, transparent: true, opacity: 0.38,
+      depthTest: false, side: THREE.DoubleSide,
+    });
+    this._markerPool = [];
+  }
+
+  /** 画候选落点;chosen 为当前会采用的那个(索引 0 即最近) */
+  showSnapMarkers(cands, chosenIdx = 0) {
+    this._ensureMarkers();
+    const n = cands.length;
+    while (this._markerPool.length < n) {
+      const m = new THREE.Mesh(this._markerGeo, this._matOther);
+      m.frustumCulled = false;
+      m.renderOrder = 998;
+      this._markerPool.push(m);
+      this.markerGroup.add(m);
+    }
+    for (let i = 0; i < this._markerPool.length; i++) {
+      const mesh = this._markerPool[i];
+      if (i >= n) { mesh.visible = false; continue; }
+      const c = cands[i];
+      const s = c.stud;
+      mesh.visible = true;
+      mesh.material = (i === chosenIdx) ? this._matChosen : this._matOther;
+      // 环放在柱钉顶端稍外一点,朝向柱钉方向
+      mesh.position.set(s.x + s.dx * 2, s.y + s.dy * 2, s.z + s.dz * 2);
+      if (Math.abs(s.dy) > 0.9) {
+        mesh.rotation.set(0, 0, 0);
+      } else {
+        // 侧向柱钉:把环立起来
+        mesh.rotation.set(Math.abs(s.dz) > 0.9 ? Math.PI / 2 : 0, 0,
+                          Math.abs(s.dx) > 0.9 ? Math.PI / 2 : 0);
+      }
+      const scale = (i === chosenIdx) ? 1.25 : 1.0;
+      mesh.scale.setScalar(scale);
+    }
+  }
+
+  hideSnapMarkers() {
+    if (!this._markerPool) return;
+    for (const m of this._markerPool) m.visible = false;
+  }
+
   // 指针拾取表面点(排除指定零件),用于拖动跟随表面
   _pickSurface(ev, excludeIds = new Set()) {
-    this.raycaster.setFromCamera(this._ndc(ev), this.camera);
+    return this._pickSurfaceAt(ev.clientX, ev.clientY, excludeIds);
+  }
+
+  _pickSurfaceAt(cx, cy, excludeIds = new Set()) {
+    this.raycaster.setFromCamera(this._ndcXY(cx, cy), this.camera);
     const hit = this.pool.raycast(this.raycaster, excludeIds);
     if (hit) return this._toLDraw(hit.point);
     const gh = this.raycaster.intersectObject(this.ground, false);
@@ -399,7 +518,11 @@ export class BrickEditor {
 
   _onDown(ev) {
     if (!ev.isPrimary) { this._ptr = null; this._clearLongPress(); this._endDrag(false); return; }
-    this._ptr = { x: ev.clientX, y: ev.clientY, t: performance.now(), moved: false, dragging: false };
+    this._ptr = {
+      x: ev.clientX, y: ev.clientY, t: performance.now(),
+      moved: false, dragging: false,
+      touch: ev.pointerType !== 'mouse',   // 触屏才需要抬升,鼠标没有遮挡问题
+    };
     // 放置/上色/删除模式下,长按零件 = 快速选中(触屏友好)
     this._clearLongPress();
     if (this.mode !== 'select' && ev.pointerType !== 'mouse') {
@@ -449,17 +572,30 @@ export class BrickEditor {
     if (!prim) return;
     const start = this._dragStarts.get(prim.id);
     const sel = new Set(this.selection);
+    // 作用点抬到手指上方(触屏),避免遮挡
+    const lp = this._liftedXY(ev);
     // 沿表面拖动:射线打到其他零件/地面
-    let P = this._pickSurface(ev, sel);
+    let P = this._pickSurfaceAt(lp.x, lp.y, sel);
     if (!P) {
       const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), start.y);
       const pt = new THREE.Vector3();
-      this.raycaster.setFromCamera(this._ndc(ev), this.camera);
+      this.raycaster.setFromCamera(this._ndcXY(lp.x, lp.y), this.camera);
       if (!this.raycaster.ray.intersectPlane(plane, pt)) return;
       P = this._toLDraw(pt);
     }
-    // Studio 式吸附:优先吸到附近柱钉,否则网格+落位
-    let target = (this.selection.size === 1) ? this._connectionSnap(prim.info, prim.m, P, sel) : null;
+    // Studio 式吸附:优先吸到附近柱钉,否则网格+落位;同时把候选落点画出来
+    let target = null;
+    if (this.selection.size === 1) {
+      const cands = this._snapCandidates(prim.info, prim.m, P, sel);
+      if (cands.length) {
+        target = { x: cands[0].x, y: cands[0].y, z: cands[0].z };
+        this.showSnapMarkers(cands, 0);
+      } else {
+        this.hideSnapMarkers();
+      }
+    } else {
+      this.hideSnapMarkers();
+    }
     if (!target) {
       const nx = Math.round(P.x / GRID) * GRID;
       const nz = Math.round(P.z / GRID) * GRID;
@@ -523,6 +659,7 @@ export class BrickEditor {
 
   _endDrag(commit) {
     this.controls.enabled = true;
+    this.hideSnapMarkers();
     if (this.dragInvalid) { this.dragInvalid = false; this._refreshHighlight(); }
     if (commit && this.selection.size && this._dragStarts) {
       const moved = [...this.selection].some(id => {
@@ -977,6 +1114,54 @@ export class BrickEditor {
   }
 
   setConnectCheck(v) { this.connectCheck = !!v; }
+
+  /** 试探性位移:检查后**一定还原**,只返回结论 'ok' | 'collide' | 'unsupported' */
+  _testMove(sel, mx, my, mz) {
+    const before = sel.map(b => ({ b, x: b.x, y: b.y, z: b.z }));
+    for (const b of sel) { b.x += mx; b.y += my; b.z += mz; }
+    const selSet = new Set(this.selection);
+    const bad = sel.some(b => this._collides(b, selSet));
+    const supported = sel.some(b => this._isSupported(b, selSet));
+    for (const s of before) { s.b.x = s.x; s.b.y = s.y; s.b.z = s.z; }
+    return bad ? 'collide' : (supported ? 'ok' : 'unsupported');
+  }
+
+  /**
+   * 方向微调:把选中零件整体挪一格(手指遮挡时的精确补救手段)。
+   * dx/dz 为水平方向,dy 为垂直方向(负值向上)。
+   *
+   * 步长策略(stepMode):
+   *   'auto' —— 先试**半格**(水平 10 LDU / 垂直 4 LDU),能扣住就用半格,
+   *             扣不住再退化为整格(20 / 8)。跳钉板(如 15573 二转一、
+   *             34103 三转二)与支架类 SNOT 结构正是靠半格对位,而普通位置
+   *             的半格必然失去支撑,所以这个试探天然能区分两种情形。
+   *             连接检测关闭时无法判别,直接用整格。
+   *   'half' / 'full' —— 强制半格 / 整格。
+   *
+   * 返回 'ok' | 'ok-half' | 'collide' | 'unsupported' | 'empty'
+   */
+  nudgeSelected(dx = 0, dy = 0, dz = 0, stepMode = 'auto') {
+    const sel = this._selectedBricks();
+    if (!sel.length) return 'empty';
+    const HALF = [10, 4], FULL = [20, 8];
+    let steps;
+    if (stepMode === 'half') steps = [HALF];
+    else if (stepMode === 'full') steps = [FULL];
+    else steps = this.connectCheck ? [HALF, FULL] : [FULL];
+
+    let lastFail = 'collide';
+    for (const [h, v] of steps) {
+      const mx = dx * h, my = dy * v, mz = dz * h;
+      if (!mx && !my && !mz) continue;
+      const verdict = this._testMove(sel, mx, my, mz);
+      if (verdict !== 'ok') { lastFail = verdict; continue; }
+      this._snapshot();
+      for (const b of sel) { b.x += mx; b.y += my; b.z += mz; this._applyTransform(b); }
+      this._notify();
+      return h === HALF[0] ? 'ok-half' : 'ok';
+    }
+    return lastFail;
+  }
 
   // 导出当前视图 PNG
   exportImage() {

@@ -322,6 +322,22 @@ export default function App() {
     }
   };
 
+  const [showNudge, setShowNudge] = useState(true);
+  const [stepMode, setStepMode] = useState('auto'); // auto | half | full
+  const STEP_LABEL = { auto: '自动', half: '半格', full: '整格' };
+  const cycleStep = () => {
+    const next = stepMode === 'auto' ? 'half' : stepMode === 'half' ? 'full' : 'auto';
+    setStepMode(next);
+    say(next === 'auto' ? '步长:自动(能扣住就走半格,否则整格)'
+      : next === 'half' ? '步长:固定半格(10 LDU)' : '步长:固定整格(20 LDU)');
+  };
+  const nudge = (dx, dy, dz) => {
+    const r = ed()?.nudgeSelected(dx, dy, dz, stepMode);
+    if (r === 'ok-half') say('半格对位(跳钉/侧接位置)');
+    else if (r === 'collide') say('那个方向被挡住了');
+    else if (r === 'unsupported') say(stepMode === 'half' ? '半格位置没有支撑' : '那个位置没有支撑');
+  };
+
   const selectLinked = () => {
     const n = ed()?.selectConnectedAbove() ?? 0;
     say(n > 0 ? `已连带选中上方 ${n} 个零件` : '上方没有相连的零件');
@@ -467,7 +483,29 @@ export default function App() {
             <button onClick={() => ed()?.groupSelected()}>🔗组</button>}
           {selection.grouped &&
             <button onClick={() => ed()?.ungroupSelected()}>✂️拆组</button>}
+          <button className={showNudge ? 'on' : ''} onClick={() => setShowNudge(v => !v)}
+            title="方向微调(手指挡住时用它精确挪一格)">✥</button>
           <button className="danger" onClick={() => ed()?.deleteSelected()}>🗑</button>
+        </div>
+      )}
+
+      {selection && mode === 'select' && showNudge && (
+        <div className="nudgepad">
+          <button className="np-title np-step" onClick={cycleStep}
+            title="点击切换步长:自动 / 半格 / 整格">
+            微调 · {STEP_LABEL[stepMode]}
+          </button>
+          <div className="np-grid">
+            <span />
+            <button onClick={() => nudge(0, 0, -1)}>↑</button>
+            <button className="np-y" onClick={() => nudge(0, -1, 0)} title="上移一层(8 LDU)">升</button>
+            <button onClick={() => nudge(-1, 0, 0)}>←</button>
+            <span className="np-dot">·</span>
+            <button onClick={() => nudge(1, 0, 0)}>→</button>
+            <span />
+            <button onClick={() => nudge(0, 0, 1)}>↓</button>
+            <button className="np-y" onClick={() => nudge(0, 1, 0)} title="下移一层(8 LDU)">降</button>
+          </div>
         </div>
       )}
 

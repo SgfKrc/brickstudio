@@ -154,6 +154,30 @@ body {
 
 .bom-actions { float: right; display: inline-flex; gap: 6px; }
 
+/* 方向微调板(手指遮挡时精确挪一格) */
+.nudgepad {
+  position: fixed; right: 10px; bottom: 210px; z-index: 24;
+  background: rgba(35, 38, 44, .96); border: 1px solid #3a3f47;
+  border-radius: 14px; padding: 8px 10px 10px;
+  box-shadow: 0 4px 18px rgba(0,0,0,.45);
+}
+.layout-left .nudgepad { bottom: 24px; }
+.np-title { font-size: 11px; color: #8a919c; text-align: center; margin-bottom: 6px; }
+.np-step {
+  display: block; width: 100%; border: 1px solid #3a3f47; background: #262b33;
+  border-radius: 8px; padding: 5px 0; cursor: pointer;
+}
+.np-step:active { background: #2b5cd9; color: #fff; }
+.np-grid { display: grid; grid-template-columns: repeat(3, 44px); gap: 5px; }
+.np-grid button {
+  height: 40px; border: 1px solid #3a3f47; background: #2c313a; color: #e8eaed;
+  border-radius: 9px; font-size: 17px; line-height: 1;
+}
+.np-grid button:active { background: #2b5cd9; border-color: #2b5cd9; }
+.np-grid button.np-y { background: #262b33; color: #9fc3e9; font-size: 14px; }
+.np-dot { display: flex; align-items: center; justify-content: center; color: #4a5058; }
+.selbar button.on { background: #2b5cd9; }
+
 /* 步骤预览条 */
 .stepbar {
   position: fixed; left: 50%; transform: translateX(-50%);
